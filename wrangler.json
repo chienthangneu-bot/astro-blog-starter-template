@@ -16,6 +16,10 @@
     {
       "pattern": "suckhoe.asia",
       "custom_domain": true
+    },
+    {
+      "pattern": "www.suckhoe.asia",
+      "custom_domain": true
     }
   ]
 }
