@@ -18,6 +18,9 @@ const IMAGE_DIR = process.env.IMAGE_DIR || "public/images/blog";
 const IMAGE_PUBLIC_PREFIX = process.env.IMAGE_PUBLIC_PREFIX || "/images/blog";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
+// Chỉ tải 2 ảnh minh họa trong bài
+const BODY_IMAGE_COUNT = Number(process.env.BODY_IMAGE_COUNT || "2");
+
 if (!process.env.GEMINI_API_KEY) {
   throw new Error("Thiếu GEMINI_API_KEY trong file .env");
 }
@@ -39,7 +42,7 @@ function todayISO() {
 }
 
 function makeSlug(title) {
-  return slugify(title, {
+  return slugify(title || "bai-viet-moi", {
     lower: true,
     strict: true,
     locale: "vi",
@@ -81,9 +84,13 @@ Nhiệm vụ:
 - Không copy nguyên văn dài từ bài nguồn.
 - Viết lại theo hướng tự nhiên, rõ ràng, có giá trị thêm.
 - Tiêu đề hấp dẫn, chuẩn SEO, không giật tít quá đà.
+- Description ngắn gọn, hấp dẫn, khoảng 140-160 ký tự.
 - Nội dung Markdown có H2/H3, đoạn ngắn, dễ đọc.
+- Nội dung nên có phần mở bài, các mục chính, lưu ý thực tế và kết luận.
 - Có thể nhắc "Nguồn tham khảo" ở cuối bài.
-- Sinh imageQuery bằng tiếng Anh để tìm ảnh Pexels phù hợp.
+- Sinh 1 imageQuery chính bằng tiếng Anh để tìm ảnh đại diện Pexels.
+- Sinh đúng 2 inlineImageQueries bằng tiếng Anh để tìm 2 ảnh minh họa chèn trong bài.
+- Ảnh minh họa phải liên quan trực tiếp đến nội dung bài.
 - Trả về đúng JSON schema.
 `.trim();
 
@@ -127,11 +134,25 @@ ${source.text}
           imageQuery: {
             type: Type.STRING,
           },
+          inlineImageQueries: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.STRING,
+            },
+          },
           content: {
             type: Type.STRING,
           },
         },
-        required: ["title", "description", "slug", "tags", "imageQuery", "content"],
+        required: [
+          "title",
+          "description",
+          "slug",
+          "tags",
+          "imageQuery",
+          "inlineImageQueries",
+          "content",
+        ],
       },
     },
   });
@@ -152,19 +173,21 @@ ${source.text}
     throw error;
   }
 
-  if (!post.slug) {
-    post.slug = makeSlug(post.title);
-  }
-
-  post.slug = makeSlug(post.slug);
+  post.slug = makeSlug(post.slug || post.title);
+  post.tags = Array.isArray(post.tags) ? post.tags : [];
+  post.inlineImageQueries = Array.isArray(post.inlineImageQueries)
+    ? post.inlineImageQueries.slice(0, BODY_IMAGE_COUNT)
+    : [];
 
   return post;
 }
 
-async function searchPexelsPhoto(query) {
+async function searchPexelsPhoto(query, usedPhotoIds = new Set()) {
+  if (!query) return null;
+
   const params = new URLSearchParams({
     query,
-    per_page: "1",
+    per_page: "10",
     orientation: "landscape",
   });
 
@@ -179,17 +202,40 @@ async function searchPexelsPhoto(query) {
   }
 
   const data = await res.json();
-  const photo = data.photos?.[0];
+  const photos = data.photos || [];
+
+  const photo = photos.find((item) => !usedPhotoIds.has(item.id));
 
   if (!photo) {
     return null;
   }
 
+  usedPhotoIds.add(photo.id);
   return photo;
 }
 
-async function downloadImage(photo, slug) {
+async function searchPexelsPhotos(queries = [], count = 2, usedPhotoIds = new Set()) {
+  const results = [];
+
+  for (const query of queries.slice(0, count)) {
+    try {
+      const photo = await searchPexelsPhoto(query, usedPhotoIds);
+
+      if (photo) {
+        results.push(photo);
+      }
+    } catch (error) {
+      console.warn(`Không tìm được ảnh Pexels cho query "${query}": ${error.message}`);
+    }
+  }
+
+  return results;
+}
+
+async function downloadImage(photo, imageName) {
   await fs.mkdir(IMAGE_DIR, { recursive: true });
+
+  if (!photo) return null;
 
   const imageUrl =
     photo?.src?.large2x ||
@@ -208,7 +254,6 @@ async function downloadImage(photo, slug) {
   }
 
   const arrayBuffer = await res.arrayBuffer();
-  const imageName = `${slug}.jpg`;
   const imagePath = path.join(IMAGE_DIR, imageName);
 
   await fs.writeFile(imagePath, Buffer.from(arrayBuffer));
@@ -216,16 +261,81 @@ async function downloadImage(photo, slug) {
   return {
     localPath: imagePath,
     publicPath: `${IMAGE_PUBLIC_PREFIX}/${imageName}`,
+    alt: photo.alt || "Ảnh minh họa bài viết",
     credit: `Photo by ${photo.photographer} on Pexels`,
     creditUrl: photo.url,
   };
 }
 
-async function writeMarkdownPost(post, imageInfo) {
+async function downloadBodyImages(photos, slug) {
+  const images = [];
+
+  for (let i = 0; i < photos.length; i++) {
+    const imageName = `${slug}-body-${i + 1}.jpg`;
+
+    try {
+      const imageInfo = await downloadImage(photos[i], imageName);
+
+      if (imageInfo) {
+        images.push(imageInfo);
+      }
+    } catch (error) {
+      console.warn(`Không tải được ảnh minh họa ${i + 1}: ${error.message}`);
+    }
+  }
+
+  return images;
+}
+
+function injectImagesIntoMarkdown(content, images = []) {
+  if (!images.length) return content;
+
+  const lines = content.split("\n");
+  const result = [];
+  let imageIndex = 0;
+
+  for (const line of lines) {
+    result.push(line);
+
+    // Chèn ảnh sau các tiêu đề H2
+    if (imageIndex < images.length && /^##\s+/.test(line.trim())) {
+      const img = images[imageIndex];
+
+      result.push("");
+      result.push(`![${img.alt}](${img.publicPath})`);
+      result.push("");
+      result.push(`<small>${img.credit}</small>`);
+      result.push("");
+
+      imageIndex++;
+    }
+  }
+
+  // Nếu bài có ít H2 quá, chèn nốt ảnh còn lại ở gần cuối bài
+  while (imageIndex < images.length) {
+    const img = images[imageIndex];
+
+    result.push("");
+    result.push(`![${img.alt}](${img.publicPath})`);
+    result.push("");
+    result.push(`<small>${img.credit}</small>`);
+    result.push("");
+
+    imageIndex++;
+  }
+
+  return result.join("\n");
+}
+
+async function writeMarkdownPost(post, heroImageInfo, bodyImages = []) {
   await fs.mkdir(BLOG_DIR, { recursive: true });
 
   const fileName = `${post.slug}.md`;
   const filePath = path.join(BLOG_DIR, fileName);
+
+  const bodyImageCredits = bodyImages
+    .map((img) => `${img.credit} - ${img.creditUrl}`)
+    .join(" | ");
 
   const frontmatter = `---
 title: ${escapeYamlString(post.title)}
@@ -233,9 +343,10 @@ description: ${escapeYamlString(post.description)}
 pubDate: ${escapeYamlString(todayISO())}
 tags:
 ${post.tags.map((tag) => `  - ${escapeYamlString(tag)}`).join("\n")}
-image: ${escapeYamlString(imageInfo?.publicPath || "")}
-imageCredit: ${escapeYamlString(imageInfo?.credit || "")}
-imageCreditUrl: ${escapeYamlString(imageInfo?.creditUrl || "")}
+heroImage: ${escapeYamlString(heroImageInfo?.publicPath || "")}
+imageCredit: ${escapeYamlString(heroImageInfo?.credit || "")}
+imageCreditUrl: ${escapeYamlString(heroImageInfo?.creditUrl || "")}
+bodyImageCredits: ${escapeYamlString(bodyImageCredits)}
 sourceUrl: ${escapeYamlString(url)}
 draft: false
 ---
@@ -256,32 +367,52 @@ async function main() {
   console.log("Đang tạo bài viết SEO bằng Gemini...");
   const post = await generateBlogPost(source);
 
-  if (!post.slug) {
-    post.slug = makeSlug(post.title);
-  }
+  const usedPhotoIds = new Set();
 
-  console.log(`Đang tìm ảnh Pexels với từ khóa: ${post.imageQuery}`);
-  const photo = await searchPexelsPhoto(post.imageQuery);
+  console.log(`Đang tìm ảnh đại diện Pexels với từ khóa: ${post.imageQuery}`);
+  const heroPhoto = await searchPexelsPhoto(post.imageQuery, usedPhotoIds);
 
-  let imageInfo = null;
+  let heroImageInfo = null;
 
-  if (photo) {
-    console.log("Đang tải ảnh...");
-    imageInfo = await downloadImage(photo, post.slug);
+  if (heroPhoto) {
+    console.log("Đang tải ảnh đại diện...");
+    heroImageInfo = await downloadImage(heroPhoto, `${post.slug}.jpg`);
   } else {
-    console.warn("Không tìm thấy ảnh Pexels phù hợp.");
+    console.warn("Không tìm thấy ảnh đại diện Pexels phù hợp.");
   }
+
+  console.log(`Đang tìm ${BODY_IMAGE_COUNT} ảnh minh họa trong bài...`);
+  const bodyPhotos = await searchPexelsPhotos(
+    post.inlineImageQueries,
+    BODY_IMAGE_COUNT,
+    usedPhotoIds
+  );
+
+  console.log("Đang tải ảnh minh họa trong bài...");
+  const bodyImages = await downloadBodyImages(bodyPhotos, post.slug);
+
+  console.log("Đang chèn ảnh minh họa vào nội dung Markdown...");
+  post.content = injectImagesIntoMarkdown(post.content, bodyImages);
 
   console.log("Đang tạo file Markdown...");
-  const filePath = await writeMarkdownPost(post, imageInfo);
+  const filePath = await writeMarkdownPost(post, heroImageInfo, bodyImages);
 
   console.log("");
   console.log("Đã tạo bài viết mới:");
   console.log(filePath);
 
-  if (imageInfo?.localPath) {
-    console.log("Ảnh đã lưu:");
-    console.log(imageInfo.localPath);
+  if (heroImageInfo?.localPath) {
+    console.log("");
+    console.log("Ảnh đại diện đã lưu:");
+    console.log(heroImageInfo.localPath);
+  }
+
+  if (bodyImages.length) {
+    console.log("");
+    console.log("Ảnh minh họa trong bài đã lưu:");
+    for (const img of bodyImages) {
+      console.log(img.localPath);
+    }
   }
 
   console.log("");
