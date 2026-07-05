@@ -9,7 +9,7 @@ tags:
   - "dấu hiệu hỏng"
   - "mẹo nhà bếp"
   - "trái cây"
-image: "/images/blog/dau-hieu-dua-hau-hong-va-cach-bao-quan-an-toan.jpg"
+heroImage: "/images/blog/dau-hieu-dua-hau-hong-va-cach-bao-quan-an-toan.jpg"
 imageCredit: "Photo by Jana Al Mubaslat on Pexels"
 imageCreditUrl: "https://www.pexels.com/photo/fresh-watermelons-displayed-in-a-market-stall-29611135/"
 sourceUrl: "https://vietnamnet.vn/vut-bo-ngay-qua-dua-hau-neu-thay-mot-so-dau-hieu-2531950.html"
