@@ -16,7 +16,13 @@
 		"@astrojs/mdx": "4.3.13",
 		"@astrojs/rss": "4.0.14",
 		"@astrojs/sitemap": "3.6.1",
+		"@google/genai": "^2.10.0",
+		"@mozilla/readability": "^0.6.0",
 		"astro": "5.16.9",
+		"dotenv": "^17.4.2",
+		"jsdom": "^29.1.1",
+		"openai": "^6.45.0",
+		"slugify": "^1.6.9",
 		"typescript": "5.9.3"
 	},
 	"devDependencies": {
@@ -33,7 +39,8 @@
 		"check": "astro build && tsc && wrangler deploy --dry-run",
 		"deploy": "wrangler deploy",
 		"dev": "astro dev",
-		"preview": "astro build && wrangler dev"
+		"preview": "astro build && wrangler dev",
+		"new:post": "node scripts/new-post-from-url.mjs"
 	},
 	"type": "module"
 }

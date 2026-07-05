@@ -1,0 +1,24 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "New blog post from URL",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "run",
+        "new:post",
+        "--",
+        "${input:articleUrl}"
+      ],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "articleUrl",
+      "type": "promptString",
+      "description": "Paste link bài viết cần tạo lại thành bài mới"
+    }
+  ]
+}
